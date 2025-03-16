@@ -18,9 +18,16 @@ const plugin = {
     // Plugin configuration
     config: {
         enabled: true,
-        autoShoutout: true,
+        autoShoutout: {
+            enabled: true,
+            cooldownHours: 24
+        },
         cooldownMinutes: 60,
-        excludedUsers: []
+        excludedUsers: [],
+        messages: {
+            streamer: "🎮 Check out @{username} over at https://twitch.tv/{username} - They're an awesome streamer! 👍",
+            nonStreamer: "💖 Shoutout to @{username} - Thanks for being an awesome part of our community! 💖"
+        }
     },
     
     // Shoutout history
@@ -38,129 +45,57 @@ const plugin = {
         
         this.logger.info('[Shoutout] Plugin initializing...');
         
-        // Load configuration
-        this.loadConfig();
-        
         // Load history
         this.loadHistory();
         
         // Set up commands
-        this.commands = [
-            {
-                name: 'shoutout',
-                config: {
-                    description: 'Shout out another streamer',
-                    usage: '!shoutout [username]',
-                    aliases: ['so'],
-                    cooldown: 5,
-                    modOnly: true,
-                    enabled: true
-                },
-                execute: async (client, channel, context, commandText) => {
-                    try {
-                        // Get the username from the message
-                        const parts = commandText.trim().split(' ');
-                        const username = parts.length > 1 ? parts[1].toLowerCase().replace('@', '') : null;
-                        
-                        if (!username) {
-                            await client.say(channel, `@${context.username} Please specify a username to shout out.`);
-                            return false;
-                        }
-                        
-                        // Perform the shoutout
-                        await this.doShoutout(client, channel, username);
-                        return true;
-                    } catch (error) {
-                        this.logger.error(`[Shoutout] Error in shoutout command:`, error);
-                        return false;
-                    }
-                }
-            },
-            {
-                name: 'soconfig',
-                config: {
-                    description: 'Configure shoutout settings',
-                    usage: '!soconfig [setting] [value]',
-                    aliases: [],
-                    cooldown: 5,
-                    modOnly: true,
-                    enabled: true
-                },
-                execute: async (client, channel, context, commandText) => {
-                    try {
-                        // Parse the command
-                        const parts = commandText.trim().split(' ');
-                        
-                        if (parts.length < 3) {
-                            await client.say(channel, `@${context.username} Usage: !soconfig [setting] [value]`);
-                            return false;
-                        }
-                        
-                        const setting = parts[1].toLowerCase();
-                        const value = parts[2].toLowerCase();
-                        
-                        // Handle different settings
-                        switch (setting) {
-                            case 'auto':
-                                this.config.autoShoutout = value === 'on' || value === 'true' || value === 'enable';
-                                await client.say(channel, `@${context.username} Auto-shoutout ${this.config.autoShoutout ? 'enabled' : 'disabled'}.`);
-                                break;
-                                
-                            case 'cooldown':
-                                const minutes = parseInt(value, 10);
-                                if (isNaN(minutes) || minutes < 0) {
-                                    await client.say(channel, `@${context.username} Invalid cooldown value. Please specify a positive number of minutes.`);
-                                    return false;
-                                }
-                                this.config.cooldownMinutes = minutes;
-                                await client.say(channel, `@${context.username} Shoutout cooldown set to ${minutes} minutes.`);
-                                break;
-                                
-                            case 'exclude':
-                                const username = value.replace('@', '');
-                                if (!this.config.excludedUsers.includes(username)) {
-                                    this.config.excludedUsers.push(username);
-                                    await client.say(channel, `@${context.username} Added ${username} to excluded users.`);
-                                } else {
-                                    await client.say(channel, `@${context.username} ${username} is already excluded.`);
-                                }
-                                break;
-                                
-                            case 'include':
-                                const user = value.replace('@', '');
-                                const index = this.config.excludedUsers.indexOf(user);
-                                if (index !== -1) {
-                                    this.config.excludedUsers.splice(index, 1);
-                                    await client.say(channel, `@${context.username} Removed ${user} from excluded users.`);
-                                } else {
-                                    await client.say(channel, `@${context.username} ${user} is not in the excluded list.`);
-                                }
-                                break;
-                                
-                            default:
-                                await client.say(channel, `@${context.username} Unknown setting: ${setting}. Available settings: auto, cooldown, exclude, include`);
-                                return false;
-                        }
-                        
-                        // Save the configuration
-                        this.saveConfig();
-                        return true;
-                    } catch (error) {
-                        this.logger.error(`[Shoutout] Error in soconfig command:`, error);
-                        return false;
-                    }
-                }
-            }
-        ];
+        this.setupCommands();
         
         this.logger.info('[Shoutout] Plugin initialized successfully');
         return true;
     },
     
+    // Set up commands based on configuration
+    setupCommands: function() {
+        this.commands = [];
+        
+        // Add shoutout command
+        this.commands.push({
+            name: 'shoutout',
+            config: {
+                description: 'Shout out another streamer',
+                usage: '!shoutout [username]',
+                aliases: ['so'],
+                cooldown: 5,
+                modOnly: true,
+                enabled: true
+            },
+            execute: async (client, channel, context, commandText) => {
+                try {
+                    // Get the username from the message
+                    const parts = commandText.trim().split(' ');
+                    const username = parts.length > 1 ? parts[1].toLowerCase().replace('@', '') : null;
+                    
+                    if (!username) {
+                        await client.say(channel, `@${context.username} Please specify a username to shout out.`);
+                        return false;
+                    }
+                    
+                    // Perform the shoutout
+                    await this.doShoutout(client, channel, username);
+                    return true;
+                } catch (error) {
+                    this.logger.error(`[Shoutout] Error in shoutout command:`, error);
+                    return false;
+                }
+            }
+        });
+    },
+    
     // Process incoming messages for auto-shoutouts
     processIncomingMessage: async function(messageObj) {
         // Skip if auto-shoutout is disabled
-        if (!this.config.autoShoutout) {
+        if (!this.config.autoShoutout || !this.config.autoShoutout.enabled) {
             return messageObj;
         }
         
@@ -177,32 +112,64 @@ const plugin = {
             return messageObj;
         }
         
+        // Only auto-shoutout streamers
+        if (!this.isStreamer(username)) {
+            return messageObj;
+        }
+        
         // Check if we've already shouted out this user recently
         const now = Date.now();
-        const lastShoutout = this.history[username] || 0;
-        const cooldownMs = this.config.cooldownMinutes * 60 * 1000;
+        const userHistory = this.history[username];
+        let lastShoutout = 0;
+        
+        if (userHistory && userHistory.lastShoutout) {
+            lastShoutout = userHistory.lastShoutout;
+        }
+        
+        // Use cooldownHours from config if available, otherwise fall back to cooldownMinutes
+        const cooldownMs = this.config.autoShoutout.cooldownHours 
+            ? this.config.autoShoutout.cooldownHours * 60 * 60 * 1000 
+            : this.config.cooldownMinutes * 60 * 1000;
         
         if (now - lastShoutout > cooldownMs) {
             // Perform the shoutout
             await this.doShoutout(this.client, messageObj.channel, username);
-            
-            // Update the history
-            this.history[username] = now;
-            this.saveHistory();
         }
         
         return messageObj;
     },
     
-    // Perform a shoutout
+    // Perform a shoutout for a user
     doShoutout: async function(client, channel, username) {
         try {
-            // Send the shoutout message
-            await client.say(channel, `Check out ${username} at https://twitch.tv/${username} - they're an awesome streamer!`);
+            // Log the shoutout
+            this.logger.info(`[Shoutout] Shouting out ${username}`);
             
-            // Update the history
-            this.history[username] = Date.now();
-            this.saveHistory();
+            // Determine if the user is a streamer based on history or known streamers
+            const isStreamer = this.isStreamer(username);
+            
+            // Get the appropriate message template based on whether the user is a streamer
+            let messageTemplate;
+            if (isStreamer) {
+                messageTemplate = this.config.messages?.streamer || "Check out @{displayName} over at {url}";
+            } else {
+                messageTemplate = this.config.messages?.nonStreamer || "Shoutout to @{displayName} - Thanks for being an awesome part of our community!";
+            }
+            
+            // Get game info if available
+            const gameInfo = this.getGameInfo(username);
+            
+            // Replace placeholders in the message
+            const message = messageTemplate.replace(/\{username\}/g, username)
+                                          .replace(/\{displayName\}/g, username)
+                                          .replace(/\{url\}/g, `https://twitch.tv/${username}`)
+                                          .replace(/\{gameInfo\}/g, gameInfo);
+            
+            // Send the message
+            await client.say(channel, message);
+            
+            // Record the shoutout in history
+            this.recordShoutout(username);
             
             return true;
         } catch (error) {
@@ -211,72 +178,149 @@ const plugin = {
         }
     },
     
-    // Load configuration
-    loadConfig: function() {
-        try {
-            const configPath = path.join(__dirname, '..', 'data', 'shoutout.json');
-            
-            if (fs.existsSync(configPath)) {
-                const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-                this.config = { ...this.config, ...configData };
-                this.logger.info('Loaded shoutout configuration');
-            } else {
-                this.saveConfig();
+    // Check if a user is a streamer
+    isStreamer: function(username) {
+        // Convert username to lowercase for case-insensitive comparison
+        const lowerUsername = username.toLowerCase();
+        
+        // Check if we have history data for this user
+        if (this.history[lowerUsername]) {
+            // If the history entry has game info, they're likely a streamer
+            if (this.history[lowerUsername].game) {
+                return true;
             }
-        } catch (error) {
-            this.logger.error(`[Shoutout] Error loading configuration:`, error);
         }
+        
+        // Known streamers list - could be expanded or loaded from config
+        const knownStreamers = [
+            'maxthriller',
+            'cergttv',
+            'jynxzi',
+            'zackrawrr',
+            'nexusrift_'
+        ];
+        
+        return knownStreamers.includes(lowerUsername);
     },
     
-    // Save configuration
-    saveConfig: function() {
-        try {
-            const dataDir = path.join(__dirname, '..', 'data');
-            
-            // Create data directory if it doesn't exist
-            if (!fs.existsSync(dataDir)) {
-                fs.mkdirSync(dataDir);
-            }
-            
-            const configPath = path.join(dataDir, 'shoutout.json');
-            fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
-            this.logger.info('Saved shoutout configuration');
-        } catch (error) {
-            this.logger.error(`[Shoutout] Error saving configuration:`, error);
+    // Get game info for a user if available
+    getGameInfo: function(username) {
+        // Convert username to lowercase for case-insensitive comparison
+        const lowerUsername = username.toLowerCase();
+        
+        // Check if we have game info in history
+        if (this.history[lowerUsername] && this.history[lowerUsername].game) {
+            return `currently playing ${this.history[lowerUsername].game}`;
         }
+        
+        // Default game info
+        return "they're an awesome streamer";
     },
     
-    // Load shoutout history
+    // Record a shoutout in history
+    recordShoutout: function(username) {
+        const now = Date.now();
+        const lowerUsername = username.toLowerCase();
+        
+        // Create or update history entry
+        if (!this.history[lowerUsername]) {
+            this.history[lowerUsername] = {
+                displayName: username,
+                lastShoutout: now,
+                url: `https://twitch.tv/${lowerUsername}`
+            };
+        } else {
+            this.history[lowerUsername].lastShoutout = now;
+            
+            // Ensure displayName is set
+            if (!this.history[lowerUsername].displayName) {
+                this.history[lowerUsername].displayName = username;
+            }
+            
+            // Ensure URL is set
+            if (!this.history[lowerUsername].url) {
+                this.history[lowerUsername].url = `https://twitch.tv/${lowerUsername}`;
+            }
+        }
+        
+        this.saveHistory();
+    },
+    
+    // Load shoutout history from file
     loadHistory: function() {
         try {
-            const historyPath = path.join(__dirname, '..', 'data', 'shoutout-history.json');
+            const historyFile = path.join(__dirname, '..', 'config', 'shoutout-history.json');
+            const oldHistoryFile = path.join(__dirname, '..', 'data', 'shoutout-history.json');
             
-            if (fs.existsSync(historyPath)) {
-                this.history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-                const count = Object.keys(this.history).length;
-                this.logger.info(`Loaded shoutout history for ${count} streamers`);
-            } else {
+            // Check if history exists in config directory first
+            if (fs.existsSync(historyFile)) {
+                const data = fs.readFileSync(historyFile, 'utf8');
+                this.history = JSON.parse(data);
+                this.logger.info(`[Shoutout] Loaded shoutout history for ${Object.keys(this.history).length} users from config directory`);
+            } 
+            // Fall back to old location in data directory
+            else if (fs.existsSync(oldHistoryFile)) {
+                const data = fs.readFileSync(oldHistoryFile, 'utf8');
+                const oldHistory = JSON.parse(data);
+                
+                // Convert old format (if needed)
+                if (typeof oldHistory === 'object') {
+                    // Check if we need to convert from old format (simple timestamp) to new format (object with details)
+                    let needsConversion = false;
+                    for (const key in oldHistory) {
+                        if (typeof oldHistory[key] === 'number') {
+                            needsConversion = true;
+                            break;
+                        }
+                    }
+                    
+                    if (needsConversion) {
+                        this.logger.info(`[Shoutout] Converting history from old format to new format`);
+                        const newHistory = {};
+                        for (const username in oldHistory) {
+                            newHistory[username] = {
+                                displayName: username,
+                                lastShoutout: oldHistory[username],
+                                url: `https://twitch.tv/${username}`
+                            };
+                        }
+                        this.history = newHistory;
+                    } else {
+                        this.history = oldHistory;
+                    }
+                } else {
+                    this.history = {};
+                }
+                
+                this.logger.info(`[Shoutout] Loaded shoutout history for ${Object.keys(this.history).length} users from data directory`);
+                
+                // Save to new location
                 this.saveHistory();
+            } else {
+                this.history = {};
+                this.logger.info(`[Shoutout] No shoutout history found, starting fresh`);
             }
         } catch (error) {
-            this.logger.error(`[Shoutout] Error loading history:`, error);
+            this.logger.error(`[Shoutout] Error loading shoutout history:`, error);
+            this.history = {};
         }
     },
     
-    // Save shoutout history
+    // Save shoutout history to file
     saveHistory: function() {
         try {
-            const dataDir = path.join(__dirname, '..', 'data');
+            const historyFile = path.join(__dirname, '..', 'config', 'shoutout-history.json');
             
-            // Create data directory if it doesn't exist
-            if (!fs.existsSync(dataDir)) {
-                fs.mkdirSync(dataDir);
+            // Create directory if it doesn't exist
+            const configDir = path.join(__dirname, '..', 'config');
+            if (!fs.existsSync(configDir)) {
+                fs.mkdirSync(configDir, { recursive: true });
             }
             
-            const historyPath = path.join(dataDir, 'shoutout-history.json');
-            fs.writeFileSync(historyPath, JSON.stringify(this.history, null, 2));
+            fs.writeFileSync(historyFile, JSON.stringify(this.history, null, 2));
+            this.logger.info(`[Shoutout] Saved shoutout history for ${Object.keys(this.history).length} users`);
         } catch (error) {
-            this.logger.error(`[Shoutout] Error saving history:`, error);
+            this.logger.error(`[Shoutout] Error saving shoutout history:`, error);
         }
     },
     
@@ -292,6 +336,18 @@ const plugin = {
         this.config.enabled = false;
         this.saveConfig();
         return true;
+    },
+    
+    // Save configuration
+    saveConfig: function() {
+        try {
+            // If we have a bot object with a plugin manager, save the configuration
+            if (this.bot && this.bot.pluginManager) {
+                this.bot.pluginManager.savePluginConfig('shoutout', this.config);
+            }
+        } catch (error) {
+            this.logger.error(`[Shoutout] Error saving configuration:`, error);
+        }
     }
 };
 
