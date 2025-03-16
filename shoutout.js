@@ -20,7 +20,8 @@ const plugin = {
         enabled: true,
         autoShoutout: {
             enabled: true,
-            cooldownHours: 24
+            cooldownHours: 24,
+            message: "🎮 Look who it is, @{username}! Check them out over over at https://twitch.tv/{username}!!! 👍"
         },
         cooldownMinutes: 60,
         excludedUsers: [],
@@ -48,6 +49,9 @@ const plugin = {
         // Load history
         this.loadHistory();
         
+        // Load the latest config without saving
+        this.reloadConfig();
+        
         // Set up commands
         this.setupCommands();
         
@@ -72,9 +76,18 @@ const plugin = {
             },
             execute: async (client, channel, context, commandText) => {
                 try {
+                    this.logger.info(`[Shoutout] Executing shoutout command: ${commandText}`);
+                    
                     // Get the username from the message
                     const parts = commandText.trim().split(' ');
-                    const username = parts.length > 1 ? parts[1].toLowerCase().replace('@', '') : null;
+                    let username = parts.length > 1 ? parts[1].toLowerCase() : null;
+                    
+                    // Remove @ symbol if present
+                    if (username && username.startsWith('@')) {
+                        username = username.substring(1);
+                    }
+                    
+                    this.logger.info(`[Shoutout] Parsed username: ${username}`);
                     
                     if (!username) {
                         await client.say(channel, `@${context.username} Please specify a username to shout out.`);
@@ -90,6 +103,17 @@ const plugin = {
                 }
             }
         });
+        
+        // Register commands with the command manager if available
+        if (this.commandManager) {
+            this.logger.info(`[Shoutout] Registering ${this.commands.length} commands with command manager`);
+            for (const command of this.commands) {
+                this.commandManager.registerCommand(command.name, command);
+                this.logger.info(`[Shoutout] Registered command: ${command.name}`);
+            }
+        } else {
+            this.logger.warn('[Shoutout] Command manager not available, commands will not be registered');
+        }
     },
     
     // Process incoming messages for auto-shoutouts
@@ -132,44 +156,81 @@ const plugin = {
             : this.config.cooldownMinutes * 60 * 1000;
         
         if (now - lastShoutout > cooldownMs) {
-            // Perform the shoutout
-            await this.doShoutout(this.client, messageObj.channel, username);
+            // Perform the auto-shoutout with custom message if available
+            if (this.config.autoShoutout.message) {
+                // Get game info if available
+                const gameInfo = this.getGameInfo(username);
+                
+                // Replace placeholders in the message
+                const message = this.config.autoShoutout.message
+                    .replace(/\{username\}/g, username)
+                    .replace(/\{displayName\}/g, username)
+                    .replace(/\{url\}/g, `https://twitch.tv/${username}`)
+                    .replace(/\{gameInfo\}/g, gameInfo);
+                
+                this.logger.info(`[Shoutout] Auto-shoutout for ${username}: ${message}`);
+                
+                // Send the message
+                await this.client.say(messageObj.channel, message);
+                
+                // Record the shoutout in history (only for streamers)
+                this.recordShoutout(username);
+            } else {
+                // Use the regular shoutout function if no custom message
+                await this.doShoutout(this.client, messageObj.channel, username);
+            }
         }
         
         return messageObj;
     },
     
     // Perform a shoutout for a user
-    doShoutout: async function(client, channel, username) {
+    doShoutout: async function(client, channel, username, forceStreamer = false) {
         try {
             // Log the shoutout
             this.logger.info(`[Shoutout] Shouting out ${username}`);
             
+            // Make sure we have the latest config
+            this.reloadConfig();
+            
             // Determine if the user is a streamer based on history or known streamers
-            const isStreamer = this.isStreamer(username);
+            const isStreamer = forceStreamer || this.isStreamer(username);
+            this.logger.info(`[Shoutout] User ${username} is ${isStreamer ? 'a streamer' : 'not a streamer'}`);
+            
+            // Log the current config
+            this.logger.info(`[Shoutout] Current config messages: ${JSON.stringify(this.config.messages)}`);
             
             // Get the appropriate message template based on whether the user is a streamer
             let messageTemplate;
             if (isStreamer) {
-                messageTemplate = this.config.messages?.streamer || "Check out @{displayName} over at {url}";
+                messageTemplate = this.config.messages?.streamer || "Check out @{username} over at https://twitch.tv/{username} - They're an awesome streamer!";
+                this.logger.info(`[Shoutout] Using streamer template: ${messageTemplate}`);
             } else {
-                messageTemplate = this.config.messages?.nonStreamer || "Shoutout to @{displayName} - Thanks for being an awesome part of our community!";
+                messageTemplate = this.config.messages?.nonStreamer || "Shoutout to @{username} - Thanks for being an awesome part of our community!";
+                this.logger.info(`[Shoutout] Using non-streamer template: ${messageTemplate}`);
             }
             
             // Get game info if available
             const gameInfo = this.getGameInfo(username);
             
             // Replace placeholders in the message
-            const message = messageTemplate.replace(/\{username\}/g, username)
-                                          .replace(/\{displayName\}/g, username)
-                                          .replace(/\{url\}/g, `https://twitch.tv/${username}`)
-                                          .replace(/\{gameInfo\}/g, gameInfo);
+            const message = messageTemplate
+                .replace(/\{username\}/g, username)
+                .replace(/\{displayName\}/g, username)
+                .replace(/\{url\}/g, `https://twitch.tv/${username}`)
+                .replace(/\{gameInfo\}/g, gameInfo);
+            
+            this.logger.info(`[Shoutout] Final message: ${message}`);
             
             // Send the message
             await client.say(channel, message);
             
-            // Record the shoutout in history
-            this.recordShoutout(username);
+            // Record the shoutout in history (only for streamers)
+            if (isStreamer) {
+                this.recordShoutout(username);
+            } else {
+                this.logger.info(`[Shoutout] Not recording ${username} in history as they are not a streamer`);
+            }
             
             return true;
         } catch (error) {
@@ -219,31 +280,33 @@ const plugin = {
     
     // Record a shoutout in history
     recordShoutout: function(username) {
-        const now = Date.now();
-        const lowerUsername = username.toLowerCase();
-        
-        // Create or update history entry
-        if (!this.history[lowerUsername]) {
+        try {
+            // Only record streamers in the history
+            if (!this.isStreamer(username)) {
+                this.logger.info(`[Shoutout] Not recording ${username} in history as they are not a streamer`);
+                return;
+            }
+            
+            // Convert username to lowercase for case-insensitive comparison
+            const lowerUsername = username.toLowerCase();
+            
+            // Get the current time
+            const now = Date.now();
+            
+            // Create or update the history entry
             this.history[lowerUsername] = {
                 displayName: username,
                 lastShoutout: now,
-                url: `https://twitch.tv/${lowerUsername}`
+                url: `https://twitch.tv/${username}`
             };
-        } else {
-            this.history[lowerUsername].lastShoutout = now;
             
-            // Ensure displayName is set
-            if (!this.history[lowerUsername].displayName) {
-                this.history[lowerUsername].displayName = username;
-            }
+            // Save the history to file
+            this.saveHistory();
             
-            // Ensure URL is set
-            if (!this.history[lowerUsername].url) {
-                this.history[lowerUsername].url = `https://twitch.tv/${lowerUsername}`;
-            }
+            this.logger.info(`[Shoutout] Recorded shoutout for ${username}`);
+        } catch (error) {
+            this.logger.error(`[Shoutout] Error recording shoutout:`, error);
         }
-        
-        this.saveHistory();
     },
     
     // Load shoutout history from file
@@ -347,6 +410,31 @@ const plugin = {
             }
         } catch (error) {
             this.logger.error(`[Shoutout] Error saving configuration:`, error);
+        }
+    },
+    
+    // Reload configuration from file without saving
+    reloadConfig: function() {
+        try {
+            if (this.bot && this.bot.configManager) {
+                // Force reload the config from file without saving
+                const freshConfig = this.bot.configManager.loadPluginConfigWithoutSaving('shoutout');
+                
+                // Update the plugin's config with the fresh config
+                if (freshConfig) {
+                    // Preserve enabled state
+                    const wasEnabled = this.config.enabled;
+                    
+                    // Update config
+                    this.config = { ...this.config, ...freshConfig, enabled: wasEnabled };
+                    
+                    this.logger.info('[Shoutout] Configuration reloaded successfully');
+                    this.logger.info(`[Shoutout] Streamer message: ${this.config.messages?.streamer}`);
+                    this.logger.info(`[Shoutout] Non-streamer message: ${this.config.messages?.nonStreamer}`);
+                }
+            }
+        } catch (error) {
+            this.logger.error(`[Shoutout] Error reloading configuration: ${error.message}`);
         }
     }
 };
